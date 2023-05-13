@@ -106,6 +106,7 @@
     save(hhc, nrow_exprData, ncol_exprData, aCalinski, file = "GSM3099847_SAVER_EDASeq_AWST_hclust.RData")
 
 # Figure 1: Hierarchical clustering with Ward’s linkage and Euclidean distance of 6,964 single-cell profiles and 2,141 features selected with AWST.
+![](MiMB20230507_final_files/figure-markdown_strict/Figure1.png-1.png)
 
     rm(list = ls())
     suppressPackageStartupMessages(library(dendextend))
