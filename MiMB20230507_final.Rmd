@@ -1,5 +1,5 @@
 ---
-title: "Unsupervised clustering of single-cells with Asymmetric Within-Sample Transformation, and per cluster supervised features selection."
+title: "Unsupervised single-cell clustering with Asymmetric Within-Sample Transformation and per cluster supervised features selection"
 author: "[S.M. Pagnotta](https://www.researchgate.net/profile/Stefano_Pagnotta) - Dept. of Science and Technology, Universit&agrave; degli Studi del Sannio (Benevento, Italy)"
 date:  'compiled on `r format(Sys.time(), "%b %d, %Y")`'
 output: html_document
