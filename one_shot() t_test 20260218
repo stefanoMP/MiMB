@@ -1,0 +1,32 @@
+one_shot <- function() { # 20260218
+
+  annotation.tmp <- clustering.df
+  m <- round(2 * min(table(annotation.tmp$design))/3)
+  tmp <- c()
+
+#  this_cluster  <- unique(annotation.tmp$design)[1]
+for(this_cluster in unique(annotation.tmp$design))
+    tmp <- c(tmp, sample(annotation.tmp$barcode[annotation.tmp$design == this_cluster], m, replace = TRUE))
+  annotation.tmp <- annotation.tmp[tmp,]
+
+  data.tmp <- ddata[, annotation.tmp$barcode] # v.1
+ 
+  if(max(table(annotation.tmp$barcode)) > 1) {
+     for(i in 1:nrow(annotation.tmp)) annotation.tmp$id[i] <- paste(sample(c(letters, LETTERS, 0:9), 15, replace = TRUE), collapse = "")
+#     sum(duplicated(annotation.tmp$id))
+     colnames(data.tmp) <- annotation.tmp$id
+     rownames(annotation.tmp) <- annotation.tmp$id
+  } 
+
+  annotation.tmp$design <- factor(annotation.tmp$design) 
+  table(annotation.tmp$design)
+
+  tmp <- apply(data.tmp, 1, function(x) t.test(x ~ annotation.tmp$design))
+  
+  ans <- as.data.frame(t(sapply(tmp, function(x) x$estimate)))
+  ans$delta <- NA
+  ans$statistic <- sapply(tmp, function(x) x$statistic)
+  ans$p.value <- sapply(tmp, function(x) log(x$p.value))
+
+  invisible(ans)
+}
