@@ -1,0 +1,43 @@
+one_shot <- function() { # 20251006
+  annotation.tmp <- clustering.df
+  n_0 <- min(tt <- table(annotation.tmp$design))
+  K <- length(tt) # no of clusters
+  
+  
+  # from each of C_k, sample without replacement n_0/K items to fill C_0
+  C_0 <- c() 
+  for(this_cluster in unique(annotation.tmp$design)) 
+      C_0 <- c(C_0, sample(annotation.tmp$barcode[annotation.tmp$design == this_cluster], n_0/K, replace = FALSE))
+  
+  annotation.tmp$design[annotation.tmp$barcode %in% C_0] <- "000" # remove from C_k the elements in C_k ∩ C_0
+  
+  
+  # Generate a “bootstrap” clustering C^∗ from C_0, C_1, . . . , C_K
+  (m <- 2 * min(table(annotation.tmp$design))/3) #20250928 dimensione portata a 2/3 (prescinde dalla dimensione del clustering)
+  clustering_star <- c() 
+  for(this_cluster in unique(annotation.tmp$design))
+    clustering_star <- c(clustering_star, sample(annotation.tmp$barcode[annotation.tmp$design == this_cluster], m, replace = TRUE))
+  annotation.tmp <- annotation.tmp[clustering_star,]
+  
+  #  addmargins(table(annotation.tmp$design, annotation.tmp$clust3))
+  #  addmargins(table(annotation.tmp$design))
+  
+  
+  for(i in 1:nrow(annotation.tmp)) annotation.tmp$id[i] <- paste(sample(c(letters, LETTERS, 0:9), 15, replace = TRUE), collapse = "")
+  
+  sum(duplicated(annotation.tmp$id))
+  
+  data.tmp <- ddata[, annotation.tmp$barcode]
+  colnames(data.tmp) <- annotation.tmp$id
+  rownames(annotation.tmp) <- annotation.tmp$id
+  annotation.tmp$design <- factor(annotation.tmp$design)
+  
+  # Mine genes associated with C_1, C_2, . . . , C_K
+  
+  dds <- DESeqDataSetFromMatrix(countData = data.tmp, colData = annotation.tmp, design = ~ design)
+  ans_DESeq <- DESeq(dds, test = "Wald", useT = T, minmu = 1e-6, fitType='local' , minReplicatesForReplace = Inf)
+  
+  ans_DESeq <- mcols(ans_DESeq, use.names=TRUE)
+  ans_DESeq <- data.frame(ans_DESeq)
+  invisible(ans_DESeq)
+}
