@@ -1,12 +1,10 @@
 # Bootstrap-based GLM procedure for gene signatures
 
 This is the outline of the procedure in Pagnotta [2024]. The algorithm produces
-a bootstrap matrix \(W^*\) (rows are associated with genes) of Wald's test
+a bootstrap matrix $W^*$ (rows are associated with genes) of Wald's test
 statistics associated with the coefficients of a GLM
 
-\[
-Y=\beta_0+\beta_1 C_1+\beta_2 C_2+\cdots+\beta_K C_K
-\]
+$$Y=\beta_0+\beta_1 C_1+\beta_2 C_2+\cdots+\beta_K C_K$$
 
 where the co-variates are the groups \(C_k\), \(k=1,2,\ldots,K\), associated
 with an *a priori* classification, and \(Y\) is the gene expression level.
