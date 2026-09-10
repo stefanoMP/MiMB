@@ -1,0 +1,46 @@
+---
+title: "Unsupervised single-cell clustering with Asymmetric Within-Sample Transformation and per cluster supervised features selection"
+author: "[S.M. Pagnotta](https://www.researchgate.net/profile/Stefano_Pagnotta) - Dept. of Science and Technology, Universit&agrave; degli Studi del Sannio (Benevento, Italy)"
+date:  'compiled on `r format(Sys.time(), "%b %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# chunk n.1: GSM3099847.RData
+```{r GSM3099847.RData, eval=FALSE}
+rm(list = ls())
+library(readr)
+Sys.setenv("VROOM_CONNECTION_SIZE"=131072*2) # ????
+ddata <- read_tsv("https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM3099nnn/GSM3099847/suppl/GSM3099847_Ind5_Expression_Matrix.txt.gz", col_names = TRUE) 
+row_names <- ddata$`...1`
+ddata <- as.matrix(ddata[, -1])
+rownames(ddata) <- row_names
+tmp <- rowSums(ddata)
+ddata <- ddata[-which(tmp == 0),]
+object.size(ddata)
+mode(ddata) <- "integer"
+object.size(ddata)
+save(ddata, file = "GSM3099847.RData")
+```
+
+# chunk n.2: GSM3099847_EDASeq.RData
+```{r GSM3099847_EDASeq.RData, eval=FALSE}
+rm(list = ls())
+load("GSM3099847.RData")
+########################################
+library(EDASeq)
+dim(ddata <- betweenLaneNormalization(ddata, which = "full", round = FALSE))
+#[1] 22997  6964
+tmp <- rowSums(ddata)
+dim(ddata <- ddata[-which(tmp == 0),])
+#[1] 22139  6964
+object.size(ddata)
+#1235492968 bytes
+mode(ddata) <- "integer"
+#618788984 bytes
+object.size(ddata)
+save(ddata, file = "GSM3099847_EDASeq.RData")
+```

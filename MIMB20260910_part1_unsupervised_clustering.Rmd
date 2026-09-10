@@ -1,0 +1,767 @@
+---
+title: "Unsupervised single-cell clustering with Asymmetric Within-Sample Transformation and per cluster supervised features selection."
+subtitle: "Unsupervised clustering pipeline"
+author: "[S.M. Pagnotta](https://www.researchgate.net/profile/Stefano_Pagnotta) - Dept. of Science and Technology, Universit&agrave; degli Studi del Sannio (Benevento, Italy)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: kate
+    code_folding: show
+  pdf_document:
+    toc: true
+    toc_depth: 3
+params:
+  # ---------------------------------------------------------------
+  # GLOBAL PARAMETERS — edit here to adapt to a new dataset
+  # ---------------------------------------------------------------
+  input_rdata:
+    label:   "Input RData file (must contain 'ddata')"
+    value:   "GSM3099847_EDASeq.RData"
+  dataset_label:
+    label:   "Dataset label (plot title)"
+    value:   "GSM3099847"
+  hclust_method:
+    label:   "Linkage method for hclust"
+    value:   "ward.D2"
+    choices: ["ward.D2", "complete", "average", "single"]
+  force_recompute:
+    label:   "Force recomputation even if the hclust output file already exists?"
+    value:   false
+  cluster_sizes:
+    label:   "Number of clusters (vector)"
+    value:   !r c(5, 7, 9)
+  calinski_from:
+    label:   "Calinski index lower bound"
+    value:   100
+  calinski_to:
+    label:   "Calinski index upper bound"
+    value:   5000
+  save_pdf:
+    label:   "Save plot as PDF?"
+    value:   false
+  pdf_width:
+    label:   "PDF width (inches)"
+    value:   20
+  pdf_height:
+    label:   "PDF height (inches)"
+    value:   10
+  calinski_url:
+    label:   "URL or local path to calinski.R"
+    value:   "https://raw.githubusercontent.com/stefanoMP/functions/main/calinski_20210214.R"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+#rm(list = ls())
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  cache   = FALSE
+)
+```
+
+---
+
+# Citation 
+**Pagnotta, S.M. (2024). Unsupervised Single-Cell Clustering with Asymmetric Within-Sample Transformation and Per-Cluster Supervised Features Selection. In: Azad, R.K. (eds) Transcriptome Data Analysis. Methods in Molecular Biology, vol 2812. Humana, New York, NY.**   
+- [https://doi.org/10.1007/978-1-0716-3886-6_8](https://doi.org/10.1007/978-1-0716-3886-6_8)   
+- [http://biorxiv.org/content/early/2023/05/21/2023.05.17.541148.abstract](http://biorxiv.org/content/early/2023/05/21/2023.05.17.541148.abstract)   
+
+---
+
+# Home repository
+- [https://github.com/stefanoMP/MiMB](https://github.com/stefanoMP/MiMB)   
+
+---
+
+# License
+- [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/): Creative Commons Attribution   
+This license allows reusers to distribute, remix, adapt, and build upon the material in any medium or format, so long as attribution is given to the creator. The license allows for commercial use.
+
+---
+
+# Overview
+
+This document runs a reusable hierarchical clustering pipeline on pre-normalised
+single-cell data. The main steps are:
+
+1. **AWST normalisation** and gene filtering via `gene_filter()`
+2. **Hierarchical clustering** with Euclidean distance and Ward's linkage
+3. **Calinski-Harabasz index** to guide the choice of the optimal number of clusters
+4. **Visualisation** with annotated dendrogram, colour bars, and legends
+
+All key parameters are exposed in the YAML `params` block and can be changed
+without touching the code, or passed programmatically via `rmarkdown::render()`.
+
+---
+
+# Global parameters
+
+```{r params-table, echo=FALSE}
+library(knitr)
+
+# Serialise cluster_sizes safely without relying on as_param_vector
+# (this chunk runs before the helper function is defined)
+.cs_raw <- params$cluster_sizes
+.cs_str <- if (is.character(.cs_raw) && length(.cs_raw) == 1) {
+  trimws(.cs_raw)                          # already a string, use as-is
+} else {
+  paste(unlist(.cs_raw), collapse = ", ")  # vector or list -> "3, 5, 7"
+}
+
+params_df <- data.frame(
+  Parameter = c(
+    "input_rdata",
+    "dataset_label",
+    "hclust_method",
+    "force_recompute",
+    "cluster_sizes",
+    "calinski_from",
+    "calinski_to",
+    "save_pdf",
+    "pdf_width",
+    "pdf_height",
+    "calinski_url"
+  ),
+  Value = c(
+    params$input_rdata,
+    params$dataset_label,
+    params$hclust_method,
+    as.character(params$force_recompute),
+    .cs_str,
+    as.character(params$calinski_from),
+    as.character(params$calinski_to),
+    as.character(params$save_pdf),
+    as.character(params$pdf_width),
+    as.character(params$pdf_height),
+    params$calinski_url
+  ),
+  Description = c(
+    "Input RData file (must contain 'ddata')",
+    "Dataset label shown in plot title",
+    "Linkage method for hierarchical clustering",
+    "Force recomputation even if the hclust output file already exists",
+    "Tree cut sizes (number of clusters per partition)",
+    "Lower bound for Calinski index plot",
+    "Upper bound for Calinski index plot",
+    "Whether to save the dendrogram as a PDF file",
+    "PDF output width (inches)",
+    "PDF output height (inches)",
+    "URL or local path to the calinski.R script"
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(
+  params_df,
+  align     = c("l", "l", "l"),
+  col.names = c("Parameter", "Value", "Description"),
+  caption   = "Active parameters for this run."
+)
+```
+
+---
+
+# 1 · Helper functions {.tabset}
+
+All reusable functions are defined here and organised into tabs for readability.
+
+## 1.1 Dependencies
+
+```{r libs}
+suppressPackageStartupMessages({
+  library(awst)
+  library(dendextend)
+  library(RColorBrewer)
+})
+
+# Load the calinski function (from URL or local path)
+source(params$calinski_url)
+```
+
+## 1.1b Helper — `as_param_vector()`
+
+`params$cluster_sizes` may arrive as a string (`"3, 5, 7"`), a list, or an atomic
+vector depending on how YAML serialises it. This helper always normalises the value
+into a standard R vector.
+
+```{r fn-as-integer-vector}
+#' Coerce cluster_sizes / palettes to an R vector regardless of how
+#' YAML passed the value (string, list, or atomic vector).
+#'
+#' @param x   Raw value from params (e.g. string "3,5,7", list, or vector)
+#' @param FUN Coercion function: as.integer (default) or as.character
+#' @return Atomic vector of the requested type
+as_param_vector <- function(x, FUN = as.integer) {
+  if (is.character(x) && length(x) == 1) {
+    # e.g. "3, 5, 7" or "c(3, 5, 7)"
+    x <- gsub("[c()\\s]", "", x)          # strip c( ) and spaces
+    x <- strsplit(x, "[,;]+")[[1]]          # split on comma or semicolon
+    x <- x[nzchar(trimws(x))]              # drop empty tokens
+  }
+  if (is.list(x)) x <- unlist(x)
+  FUN(x)
+}
+
+#' Regex matching any of the accepted RData extensions (.RData, .rdata, .rda),
+#' case-insensitively.
+.RDATA_EXT_REGEX <- "\\.(RData|rdata|rda)$"
+
+#' Derive a new file path by replacing the RData extension (.RData/.rdata/.rda,
+#' case-insensitive) of `file` with `suffix`.
+#'
+#' @param file   Original file path, ending in .RData, .rdata, or .rda
+#' @param suffix Replacement string (e.g. "_clustering.RData")
+#' @return       Derived path
+derive_rdata_path <- function(file, suffix) {
+  sub(.RDATA_EXT_REGEX, suffix, file, ignore.case = TRUE)
+}
+
+#' Resolve a data file on disk by trying each of the accepted RData
+#' extensions (.RData, .rdata, .rda) appended to `base`.
+#'
+#' @param base Path without extension (e.g. "MyDataset_annotation")
+#' @return     First existing path among base+ext, or base+".RData" if none exist
+resolve_rdata_file <- function(base) {
+  candidates <- paste0(base, c(".RData", ".rdata", ".rda"))
+  found <- candidates[file.exists(candidates)]
+  if (length(found) > 0) found[1] else candidates[1]
+}
+```
+
+## 1.2 `prepare_clustering()`
+
+Applies AWST normalisation, filters genes, and computes the hierarchical clustering.
+
+```{r fn-prepare}
+#' @param input_file     Path to RData file containing matrix `ddata`
+#' @param output_file    Where to save the output RData (NULL = auto-derived)
+#' @param hclust_method  Linkage method for hclust (default: "ward.D2")
+#' @param poscount       poscount argument passed to awst()
+#' @param full_quantile  full_quantile argument passed to awst()
+#' @param force          If TRUE, recompute even if output already exists.
+#'                        Default: FALSE. Wired to the `force_recompute`
+#'                        global parameter in chunk3-prepare below.
+#' @return Invisible list: hhc, nrow_exprData, ncol_exprData, aCalinski
+prepare_clustering <- function(
+    input_file,
+    output_file    = NULL,
+    hclust_method  = "ward.D2",
+    poscount       = TRUE,
+    full_quantile  = TRUE,
+    force          = FALSE
+) {
+  if (is.null(output_file))
+    output_file <- derive_rdata_path(input_file, "_AWST_hclust.RData")
+
+  # -- skip if output already exists and force = FALSE --
+  if (file.exists(output_file) && !force) {
+    message("⏭  Output already exists, loading from: ", output_file)
+    env <- new.env()
+    tryCatch(
+      load(output_file, envir = env),
+      error = function(e) stop(
+        "Cannot read existing output '", output_file, "'.\n",
+        "  Reason: ", conditionMessage(e), "\n",
+        "  Try calling again with force = TRUE to regenerate it."
+      )
+    )
+    return(invisible(list(
+      hhc           = env$hhc,
+      nrow_exprData = env$nrow_exprData,
+      ncol_exprData = env$ncol_exprData,
+      aCalinski     = env$aCalinski,
+      output_file   = output_file
+    )))
+  }
+
+  # -- verify the input file exists before opening it --
+  if (!file.exists(input_file))
+    stop(
+      "Input file not found: '", input_file, "'.\n",
+      "  Current working directory: ", getwd()
+    )
+
+  env <- new.env()
+  tryCatch(
+    load(input_file, envir = env),
+    error = function(e) stop(
+      "Cannot read '", input_file, "'.\n",
+      "  Reason: ", conditionMessage(e)
+    )
+  )
+  if (!exists("ddata", envir = env))
+    stop("'", input_file, "' does not contain an object named 'ddata'.")
+  ddata <- env$ddata
+
+  message("→ AWST...")
+  exprData <- awst(ddata, poscount = poscount, full_quantile = full_quantile)
+  exprData <- gene_filter(exprData)
+  message(sprintf("  Dimensions: %d genes x %d cells", nrow(exprData), ncol(exprData)))
+
+  exprData      <- t(exprData)
+  nrow_exprData <- nrow(exprData)   # cellule
+  ncol_exprData <- ncol(exprData)   # geni
+
+  message("→ Distance matrix + hclust (", hclust_method, ")...")
+  ddist <- dist(exprData)
+  hhc   <- hclust(ddist, method = hclust_method)
+
+  message("→ Calinski index...")
+  aCalinski <- calinski(hhc)
+
+  save(hhc, nrow_exprData, ncol_exprData, aCalinski, file = output_file)
+  message("✔  Saved: ", output_file)
+
+  invisible(list(
+    hhc           = hhc,
+    nrow_exprData = nrow_exprData,
+    ncol_exprData = ncol_exprData,
+    aCalinski     = aCalinski,
+    output_file   = output_file
+  ))
+}
+```
+
+## 1.3 `add_clustering_cut()`
+
+Cuts the tree at *k* clusters and assigns labels and colours.
+
+```{r fn-cut}
+#' @param hhc               hclust object
+#' @param clustering.df     Data frame with a 'barcode' column
+#' @param clust.colorCode   Named colour vector already assigned
+#' @param no_of_clusters    k for cutree()
+#' @param palette_name      RColorBrewer palette name
+#' @param clustering.prefix Column name prefix (default: "clust")
+#' @param short.prefix      Short prefix for cluster labels (default: "c")
+#' @param nrow_exprData     Number of cells (used to draw the cut line)
+#' @return List: updated clustering.df, clust.colorCode, cut height hh
+add_clustering_cut <- function(
+    hhc,
+    clustering.df,
+    clust.colorCode,
+    no_of_clusters,
+    palette_name,
+    colors            = NULL,
+    clustering.prefix = "clust",
+    short.prefix      = "c",
+    nrow_exprData     = NULL
+) {
+  clustering_name     <- paste0(clustering.prefix, no_of_clusters)
+  clustering_name.col <- paste0(clustering_name, ".col")
+
+  hh <- (
+    hhc$height[length(hhc$height) - no_of_clusters + 2] +
+    hhc$height[length(hhc$height) - no_of_clusters + 1]
+  ) / 2
+
+  # draw cut line only if a graphics device is open
+  if (!is.null(nrow_exprData) && dev.cur() != 1)
+    segments(1, hh, nrow_exprData, hh, col = "red")
+
+  labels_pool <- c(paste(1:9), letters)
+  tmp <- as.factor(cutree(hhc, k = no_of_clusters))
+  levels(tmp) <- paste0(short.prefix, no_of_clusters, labels_pool)[1:no_of_clusters]
+  assign(clustering_name, tmp)
+
+  if (!is.null(colors) && length(colors) >= no_of_clusters) {
+    col_vec <- colors[1:no_of_clusters]
+  } else {
+    col_vec <- brewer.pal(n = no_of_clusters, name = palette_name)
+  }
+  levels(tmp) <- col_vec
+  assign(clustering_name.col, tmp)
+
+  clustering.df$tmp     <- get(clustering_name)
+  clustering.df$tmp.col <- get(clustering_name.col)
+
+  tt        <- table(clustering.df$tmp, clustering.df$tmp.col)
+  colorCode <- colnames(tt)[apply(tt, 1, which.max)]
+  names(colorCode) <- rownames(tt)
+  clust.colorCode <- c(clust.colorCode, colorCode)
+
+  tmp_cols <- grep("^tmp", colnames(clustering.df))
+  colnames(clustering.df)[tmp_cols] <-
+    gsub("tmp", clustering_name, colnames(clustering.df)[tmp_cols])
+
+  list(
+    clustering.df   = clustering.df,
+    clust.colorCode = clust.colorCode,
+    hh              = hh
+  )
+}
+```
+
+## 1.4 `add_cluster_legend()`
+
+Adds a legend to the dendrogram for a given tree cut.
+
+```{r fn-legend}
+#' @param clustering.df   Clustering data frame
+#' @param clust.colorCode Named colour vector
+#' @param clustering_name Column name (e.g. "clust3")
+#' @param x, y            Legend coordinates
+#' @param ...             Extra arguments passed to legend()
+add_cluster_legend <- function(
+    clustering.df,
+    clust.colorCode,
+    clustering_name,
+    x, y = 0.99,
+    ...
+) {
+  tt      <- table(clustering.df[[clustering_name]])
+  llegend <- paste0(names(tt), " (", tt, ")")
+  ffill   <- clust.colorCode[names(tt)]
+  legend(x, y,
+    legend = llegend, fill = ffill,
+    y.intersp = 1, box.col = "white", border = "white",
+    title = clustering_name, title.adj = 0, ...)
+}
+```
+
+## 1.5 `plot_clustering()`
+
+Main function: loads data, plots the dendrogram, cuts the tree, and saves results.
+
+```{r fn-plot}
+#' @param input_file       RData produced by prepare_clustering()
+#' @param output_file      Where to save clustering.df (NULL = auto)
+#' @param cluster_sizes    Vector of k values (e.g. c(3, 5, 7))
+#' @param palettes         RColorBrewer palettes; NULL = assigned automatically
+#'                         from the internal pool based on length(cluster_sizes)
+#' @param cluster_colors   Optional named list of colour vectors, one per cut,
+#'                         named by clustering column (e.g.
+#'                         list(clust3 = c("#E41A1C","#377EB8","#4DAF4A"),
+#'                              clust5 = c(...))).
+#'                         Entries whose name matches a cut override the palette
+#'                         for that cut; all other cuts still use palettes.
+#' @param dataset_label    Label shown in the plot title
+#' @param calinski_from/to Range for the Calinski index plot
+#' @param legend_x_start   x coordinate of the first legend (NULL = auto)
+#' @param legend_x_step    Horizontal step between successive legends (NULL = auto)
+#' @param pdf_file         PDF output path (NULL = do not save)
+#' @param pdf_width/height PDF dimensions in inches
+#' @return Invisible list: clustering.df, clust.colorCode
+# Pool of qualitative RColorBrewer palettes (preference order)
+.PALETTE_POOL <- c("Set2", "Dark2", "Set1", "Paired", "Accent", "Pastel1", "Pastel2")
+
+plot_clustering <- function(
+    input_file,
+    output_file       = NULL,
+    cluster_sizes     = c(3, 5),
+    palettes          = NULL,
+    cluster_colors    = NULL,
+    dataset_label     = NULL,
+    calinski_from     = 500,
+    calinski_to       = 5000,
+    legend_x_start    = NULL,
+    legend_x_step     = NULL,
+    pdf_file          = NULL,
+    pdf_width         = 20,
+    pdf_height        = 10
+) {
+  # Normalise cluster_sizes (robust to YAML strings like "3, 5, 7")
+  cluster_sizes <- as_param_vector(cluster_sizes, as.integer)
+
+  # Auto-assign palettes if not provided or insufficient
+  if (is.null(palettes) || length(palettes) == 0) {
+    palettes <- .PALETTE_POOL[seq_along(cluster_sizes)]
+  } else {
+    palettes <- as_param_vector(palettes, as.character)
+    if (length(palettes) < length(cluster_sizes)) {
+      message("Too few palettes (", length(palettes), " supplied, ",
+              length(cluster_sizes), " needed): filling from internal pool.")
+      palettes <- c(palettes,
+                    setdiff(.PALETTE_POOL, palettes))[seq_along(cluster_sizes)]
+    }
+  }
+  message("Palettes in use: ", paste(palettes, collapse = ", "))
+
+  env <- new.env()
+  load(input_file, envir = env)
+  hhc           <- env$hhc
+  nrow_exprData <- env$nrow_exprData
+  ncol_exprData <- env$ncol_exprData
+  aCalinski     <- env$aCalinski
+
+  # -- annotation.df is optional: if it is missing (neither embedded in
+  #    input_file nor available as a separate '<dataset_label>_annotation'
+  #    file), proceed without any annotation import instead of stopping. --
+  annotation.df <- NULL
+  if (exists("annotation.df", envir = env, inherits = FALSE)) {
+    annotation.df <- env$annotation.df
+  } else {
+    annotation_file <- resolve_rdata_file(paste0(dataset_label, "_annotation"))
+    if (file.exists(annotation_file)) {
+      load(annotation_file, envir = env)
+      if (exists("annotation.df", envir = env, inherits = FALSE)) {
+        annotation.df <- env$annotation.df
+        message("annotation.df loaded from: ", annotation_file)
+      } else {
+        message("'", annotation_file, "' does not contain an object named ",
+                "'annotation.df'. Proceeding without annotation.")
+      }
+    } else {
+      message("No 'annotation.df' found in '", input_file, "' and no ",
+              "annotation file '", annotation_file, "' found. ",
+              "Proceeding without annotation.")
+    }
+  }
+
+  clustering.df   <- data.frame(row.names = hhc$labels, barcode = hhc$labels)
+  clust.colorCode <- NULL
+
+  mmain <- if (!is.null(dataset_label)) {
+    paste0(dataset_label, " (", nrow_exprData, " cells / ", ncol_exprData, " genes)")
+  } else {
+    paste0("(", nrow_exprData, " cells / ", ncol_exprData, " genes)")
+  }
+
+  hhc$height <- hhc$height / max(hhc$height)
+
+  # -- compute all tree cuts once, with NO graphics device open, so that
+  #    add_clustering_cut() only computes (clustering.df, clust.colorCode,
+  #    cut height) and does not attempt to draw anything yet --
+  clustering.df$reduced <- as.factor(cutree(hhc, k = 500))
+
+  cut_heights <- numeric(length(cluster_sizes))
+  for (i in seq_along(cluster_sizes)) {
+    cname  <- paste0("clust", cluster_sizes[i])
+    colors <- if (!is.null(cluster_colors) && cname %in% names(cluster_colors))
+                cluster_colors[[cname]] else NULL
+    res <- add_clustering_cut(
+      hhc             = hhc,
+      clustering.df   = clustering.df,
+      clust.colorCode = clust.colorCode,
+      no_of_clusters  = cluster_sizes[i],
+      palette_name    = palettes[i],
+      colors          = colors,
+      nrow_exprData   = NULL   # no device open yet -> no drawing happens here
+    )
+    clustering.df   <- res$clustering.df
+    clust.colorCode <- res$clust.colorCode
+    cut_heights[i]  <- res$hh
+  }
+
+  # -- colour bars --
+
+  clustering.df  <- clustering.df[hhc$labels, , drop = FALSE]
+
+  # -- import .col variables (and their base counterparts) from annotation.df,
+  #    only if annotation.df is available --
+  if (!is.null(annotation.df)) {
+    annotation.df  <- annotation.df[hhc$labels, , drop = FALSE]
+
+    annot.col_vars  <- grep("\\.col$", colnames(annotation.df), value = TRUE)
+    annot.base_vars <- gsub("\\.col$", "", annot.col_vars)
+    annot.base_vars <- annot.base_vars[annot.base_vars %in% colnames(annotation.df)]
+    annot.import_vars <- union(annot.col_vars, annot.base_vars)
+    if (length(annot.import_vars) > 0)
+      clustering.df[, annot.import_vars] <- annotation.df[, annot.import_vars]
+  } else {
+    annot.col_vars <- character(0)
+  }
+
+  clust.col_vars  <- grep("\\.col$", colnames(clustering.df), value = TRUE)
+  clust.col_vars  <- clust.col_vars[!clust.col_vars %in% annot.col_vars]
+  annot.col_ordered <- annot.col_vars[annot.col_vars %in% colnames(clustering.df)]
+
+  clustering.col <- clustering.df[, c(clust.col_vars, annot.col_ordered), drop = FALSE]
+  colnames(clustering.col) <- gsub("\\.col$", "", colnames(clustering.col))
+
+  # -- legend x positions (computed once, reused by every draw) --
+  if (is.null(legend_x_start)) legend_x_start <- round(nrow_exprData * 0.78)
+  if (is.null(legend_x_step))  legend_x_step  <- round(nrow_exprData * 0.07)
+
+  # -- draw closure: base graphics (plot.hclust, segments, colored_bars,
+  #    legend) cannot be "replayed" from a saved object like grid/ggplot
+  #    output can, so to show the figure in HTML *and* save it as PDF the
+  #    whole sequence must be re-executed once per device. --
+  draw_all <- function() {
+    plot(hhc, hang = -1, labels = FALSE, xlab = "", sub = "", main = mmain)
+    plot(aCalinski, add = TRUE,
+         from = calinski_from, to = calinski_to,
+         shift = 0.55, height = 0.35, max_height = 1)
+
+    for (hh in cut_heights)
+      segments(1, hh, nrow_exprData, hh, col = "red")
+
+    colored_bars(colors = clustering.col, dend = as.dendrogram(hhc),
+                 y_scale = 0.1, y_shift = 0.0)
+
+    for (i in seq_along(cluster_sizes)) {
+      cname <- paste0("clust", cluster_sizes[i])
+      add_cluster_legend(
+        clustering.df   = clustering.df,
+        clust.colorCode = clust.colorCode,
+        clustering_name = cname,
+        x               = legend_x_start + (i - 1) * legend_x_step
+      )
+    }
+  }
+
+  # always draw on the currently active device (knitr's own device when
+  # rendering, or the interactive device otherwise) so the figure appears
+  # inline regardless of whether a PDF is also being saved
+  draw_all()
+
+  # additionally save a PDF copy, redrawing the same sequence on that device
+  if (!is.null(pdf_file)) {
+    pdf(pdf_file, width = pdf_width, height = pdf_height)
+    draw_all()
+    dev.off()
+    message("Figure saved to: ", pdf_file)
+  }
+
+  # -- save RData --
+  if (is.null(output_file))
+    output_file <- paste0(dataset_label, "_clustering.RData")
+  save(clustering.df, clust.colorCode, file = output_file)
+  message("Clustering saved to: ", output_file)
+
+  invisible(list(
+    clustering.df   = clustering.df,
+    clust.colorCode = clust.colorCode,
+    nrow_exprData   = nrow_exprData,
+    ncol_exprData   = ncol_exprData,
+    cluster_sizes   = cluster_sizes
+  ))
+}
+```
+
+---
+
+# 2 · Data preparation
+
+```{r chunk3-prepare, eval=TRUE}
+# Derive output path automatically from the input filename
+hclust_rdata <- derive_rdata_path(params$input_rdata, "_AWST_hclust.RData")
+
+result_prep <- prepare_clustering(
+  input_file    = params$input_rdata,
+  output_file   = hclust_rdata,
+  hclust_method = params$hclust_method,
+  force         = params$force_recompute
+)
+```
+
+> **Note:** if `_AWST_hclust.RData` already exists on disk, `prepare_clustering()`
+> loads it directly without re-running AWST or hclust. Set the `force_recompute`
+> global parameter to `true` to force recomputation (e.g. after changing the
+> dataset or parameters).
+
+---
+
+# 3 · Figure 1 — Annotated dendrogram {.tabset}
+
+## Plot
+
+```{r figure1, eval=TRUE, fig.width=30, fig.height=13}
+hclust_rdata <- derive_rdata_path(params$input_rdata, "_AWST_hclust.RData")
+
+pdf_out <- if (params$save_pdf) {
+  derive_rdata_path(params$input_rdata, "_Figure1.pdf")
+} else NULL
+
+result_plot <- plot_clustering(
+  input_file    = hclust_rdata,
+  cluster_sizes = params$cluster_sizes,
+  palettes      = params$palettes,
+  dataset_label = params$dataset_label,
+  calinski_from = params$calinski_from,
+  calinski_to   = params$calinski_to,
+  pdf_file      = pdf_out,
+  pdf_width     = params$pdf_width,
+  pdf_height    = params$pdf_height
+)
+```
+
+```{r figure1-caption, echo=FALSE, results='asis'}
+if (exists("result_plot")) {
+  cs      <- result_plot$cluster_sizes
+  n_cells <- result_plot$nrow_exprData
+  n_genes <- result_plot$ncol_exprData
+
+  cs_text <- if (length(cs) > 1) {
+    paste0(paste(head(cs, -1), collapse = ", "), " and ", tail(cs, 1))
+  } else {
+    as.character(cs)
+  }
+  cs_label <- paste0(paste0("clust", cs), collapse = "/")
+
+  cat0 <- function(...) cat(..., sep = "")
+
+  cat0(
+    "**Figure 1.** Unsupervised hierarchical clustering (", params$hclust_method,
+    " linkage, Euclidean distance) of **", format(n_cells, big.mark = ","),
+    "** single-cell transcriptomes from the **", params$dataset_label,
+    "** dataset, based on **", format(n_genes, big.mark = ","),
+    "** genes selected after Asymmetric Within-Sample Transformation (AWST) ",
+    "normalisation. The Calinski-Harabasz criterion (curve overlaid on the ",
+    "dendrogram) was used to guide the choice of partition granularity. ",
+    "Coloured annotation bars below the dendrogram show the partitions into ",
+    cs_text, " clusters (", cs_label, "), obtained by cutting the tree at the ",
+    "corresponding heights; cluster sizes are reported in the summary table ",
+    "below."
+  )
+
+  if (!is.null(result_plot$clustering.df) &&
+      any(grepl("\\.col$", colnames(result_plot$clustering.df))) &&
+      length(setdiff(grep("\\.col$", colnames(result_plot$clustering.df), value = TRUE),
+                      paste0("clust", cs, ".col"))) > 0) {
+    cat0(" Additional annotation bars reflect external sample metadata, ",
+         "where available.")
+  }
+}
+```
+
+## Cluster summary table
+
+```{r table-summary, eval=TRUE}
+if (exists("result_plot")) {
+  cdf <- result_plot$clustering.df
+  col_names <- paste0("clust", params$cluster_sizes)
+  col_names <- col_names[col_names %in% colnames(cdf)]
+
+  for (cn in col_names) {
+    tt <- as.data.frame(table(cdf[[cn]]))
+    colnames(tt) <- c("Cluster", "N cells")
+    cat("\n###", cn, "\n")
+    print(knitr::kable(tt, align = "lr"))
+  }
+}
+```
+
+---
+
+# 4 · Rendering from the command line
+
+To regenerate the report on a different dataset without editing the file:
+
+```r
+rmarkdown::render(
+  "clustering_pipeline.Rmd",
+  params = list(
+    input_rdata   = "MioDataset_SAVER_EDASeq.RData",
+    dataset_label = "MioDataset",
+    cluster_sizes = c(4, 7, 10),   # palettes are assigned automatically
+    save_pdf      = TRUE
+  ),
+  output_file = "MioDataset_clustering_report.html"
+)
+```
+
+---
+
+# 5 · Session info
+
+```{r session-info}
+sessionInfo()
+```
